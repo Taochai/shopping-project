@@ -17,4 +17,6 @@ public interface ProductService {
     boolean deductStock(Long productId, Integer quantity);
     void increaseStock(Long productId, Integer quantity);
     Integer getProductStock(Long productId);
+
+    Product getProductDetail(Long id);
 }
