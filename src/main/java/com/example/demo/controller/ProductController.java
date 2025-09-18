@@ -30,6 +30,21 @@ public class ProductController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
+
+    // 选择性更新商品信息（PATCH方法）
+    @PatchMapping("/{id}")
+    public ResponseEntity<?> updateProductSelective(
+            @PathVariable Long id,
+            @RequestBody Product product) {
+        try {
+            Product updatedProduct = productService.updateProductSelective(id, product);
+            return ResponseEntity.ok(updatedProduct);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+
     @GetMapping("/{id}")
     public ResponseEntity<?> getProduct(@PathVariable Long id) {
         try {

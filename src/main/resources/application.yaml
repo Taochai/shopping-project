@@ -22,17 +22,17 @@ mybatis:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-
+    local-cache-scope: STATEMENT
 server:
   port: 8081
 
 logging:
   level:
     com.example.demo: DEBUG
-    org.springframework.web: DEBUG
-    org.hibernate: INFO
-    org.mybatis: DEBUG
-    com.zaxxer.hikari: DEBUG
-    com.zaxxer.hikari.HikariConfig: DEBUG
-    com.zaxxer.hikari.pool: TRACE
+#    org.springframework.web: DEBUG
+#    org.hibernate: INFO
+#    org.mybatis: DEBUG
+#    com.zaxxer.hikari: DEBUG
+#    com.zaxxer.hikari.HikariConfig: DEBUG
+#    com.zaxxer.hikari.pool: TRACE
 

@@ -30,4 +30,21 @@ public interface ProductMapper {
 
     @Select("SELECT COUNT(*) FROM products WHERE name = #{name}")
     boolean existsByName(String name);
+
+    // 选择性更新商品（只更新非空字段）
+    @Update("<script>" +
+            "UPDATE products " +
+            "<set>" +
+            "  <if test='name != null'>name = #{name},</if>" +
+            "  <if test='price != null'>price = #{price},</if>" +
+            "  <if test='stock != null'>stock = #{stock},</if>" +
+            "  <if test='description != null'>description = #{description},</if>" +
+            "  updated_time = #{updatedTime}" +
+            "</set>" +
+            "WHERE id = #{id}" +
+            "</script>")
+    int updateSelectiveById(Product product);
+
+    @Select("SELECT COUNT(*) FROM products WHERE name = #{name} AND id != #{id}")
+    boolean existsByNameExcludeId(@Param("name") String name, @Param("id") Long id);
 }
