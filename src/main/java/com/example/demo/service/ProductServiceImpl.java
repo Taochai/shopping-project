@@ -2,10 +2,11 @@ package com.example.demo.service;
 
 import com.example.demo.entity.Product;
 import com.example.demo.mapper.ProductMapper;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RBloomFilter;
 import org.redisson.api.RBucket;
+import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -14,24 +15,36 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class ProductServiceImpl implements ProductService {
+    private static final Object NULL_CACHE_MARKER = new Object(); // 使用Object作为标记 解决缓存穿透问题（访问不存在的数据）
+    // 布隆过滤器，用于判断商品是否存在  解决缓存穿透问题（访问不存在的数据）
+    private RBloomFilter<Long> productBloomFilter;
 
-    @PostConstruct
-    public void printCodec() {
-        System.out.println("Current codec: " + redissonClient.getConfig().getCodec().getClass());
-    }
-
+    //    @PostConstruct
+//    public void init() {
+//        productBloomFilter = redissonClient.getBloomFilter("productBloomFilter");
+//        // 初始化布隆过滤器，预计元素数量100000，误判率0.01%
+//        productBloomFilter.tryInit(100000L, 0.0001);
+//
+//        // 预热：将现有商品ID加入布隆过滤器
+//        List<Long> existingIds = productMapper.findAllIds();
+//        for (Long id : existingIds) {
+//            productBloomFilter.add(id);
+//        }
+//    }
     private final ProductMapper productMapper;
 
     @Autowired
     private RedissonClient redissonClient;
     private static final Long HOT_PRODUCT_ID = 39600L;  // 你的热点商品ID
     private static final String HOT_PRODUCT_KEY_PREFIX = "hot_product:";
+    private static final String HOT_PRODUCT_KEY_LOCK_PREFIX = "hot_product_lock:";
 
     @Override
     @Transactional
@@ -67,11 +80,6 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public Product getProductById(Long id) {
-        return productMapper.findById(id).orElse(null);
-    }
-
-    @Override
     public List<Product> getAllProducts() {
         return productMapper.findAll();
     }
@@ -96,32 +104,67 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public Product getProductDetail(Long id) {
+//        // 使用布隆过滤器快速判断商品是否存在
+//        if (!productBloomFilter.contains(id)) {
+//            log.warn("商品ID不存在于布隆过滤器中，直接返回null，ID: {}", id);
+//            return null;
+//        }
+
         if (HOT_PRODUCT_ID.equals(id)) {
             String key = HOT_PRODUCT_KEY_PREFIX + id;
-            RBucket<Product> bucket = redissonClient.getBucket(key);
+            RBucket<Object> bucket = redissonClient.getBucket(key);
 
             // 先从 Redis 读缓存
-            Product product = bucket.get();
+            Object product = bucket.get();
             if (product != null) {
-                return product;
+                if (product == NULL_CACHE_MARKER) {
+                    log.info("命中空值缓存，商品不存在，ID: {}", id);
+                    return null;
+                }
+                log.info("从缓存读取商品数据，ID: {}", id);
+                return (Product) product; // 类型转换
             }
-
-            //模拟接口耗时超长，触发数据库连接池耗尽。
+            String productLockKey = HOT_PRODUCT_KEY_LOCK_PREFIX + id;
+            RLock lock = redissonClient.getLock(productLockKey);
             try {
-                Thread.sleep(1000);
+                if (lock.tryLock(1, 5, TimeUnit.SECONDS)) {
+                    product = bucket.get();
+                    if (product != null) {
+                        if (product == NULL_CACHE_MARKER) {
+                            return null;
+                        }
+                        return (Product) product;
+                    }
+                    log.info("重建缓存");
+                    // 缓存没命中，从数据库查
+                    product = productMapper.findById(id).orElse(null);
+                    if (product != null) {
+                        // 写入 Redis，设置10s过期时间
+                        bucket.set(product, 10 + new Random().nextInt(5), TimeUnit.SECONDS);
+                    } else {
+                        // 7. 应对缓存穿透：缓存空值
+                        bucket.set(NULL_CACHE_MARKER, 5, TimeUnit.MINUTES);
+                        log.warn("数据库不存在该商品，缓存空值防止穿透，商品ID: {}", id);
+                    }
+                    return (Product) product;
+                } else {
+                    Thread.sleep(50);
+                    product = bucket.get();
+                    if (product != null) {
+                        if (product == NULL_CACHE_MARKER) {
+                            return null;
+                        }
+                        return (Product) product;
+                    }
+                    return productMapper.findById(id).orElse(null);
+                }
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                Thread.currentThread().interrupt();
+                log.error("获取锁过程被中断，直接查询数据库，商品ID: {}", id);
+                return productMapper.findById(id).orElse(null);
+            } finally {
+                lock.unlock();
             }
-            log.debug("缓存没命中，从数据库查");
-            // 缓存没命中，从数据库查
-            product = productMapper.findById(id).orElse(null);
-
-            if (product != null) {
-                System.out.println("*********插入缓存");
-                // 写入 Redis，设置10分钟过期时间
-                bucket.set(product, 10, TimeUnit.SECONDS);
-            }
-            return product;
         }
         return productMapper.findById(id).orElse(null);
     }
@@ -132,7 +175,7 @@ public class ProductServiceImpl implements ProductService {
         log.info("开始选择性更新商品，ID: {}, 数据: {}", id, product);
 
         // 1. 检查商品是否存在
-        Product existingProduct = getProductById(id);
+        Product existingProduct = getProductDetail(id);
         if (existingProduct == null) {
             throw new RuntimeException("商品不存在: " + product.getName());
         }
@@ -168,7 +211,7 @@ public class ProductServiceImpl implements ProductService {
         // 7. 清除缓存
         clearProductCache(id);
 
-        return getProductById(id);
+        return getProductDetail(id);
     }
 
     // 清除商品缓存

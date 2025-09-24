@@ -11,7 +11,6 @@ public interface ProductService {
     @Transactional
     Product createProduct(Product product);
 
-    Product getProductById(Long id);
     List<Product> getAllProducts();
     boolean deductStock(Long productId, Integer quantity);
     void increaseStock(Long productId, Integer quantity);
